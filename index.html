@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nightly Bot</title>
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --dim:#94a3b8; --up:#34d399; --down:#f87171; --acc:#38bdf8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; padding:16px 16px 40px; max-width:640px; margin-inline:auto; }
+  h1 { font-size:18px; margin:0; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:24px 0 8px; }
+  .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  button { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:8px 12px; font:inherit; }
+  .card { background:var(--card); border-radius:14px; padding:14px; margin-bottom:10px; }
+  .big { font-size:34px; font-weight:700; }
+  .dim { color:var(--dim); font-size:13px; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .tag { font-size:11px; padding:2px 8px; border-radius:99px; background:#0b3a53; color:var(--acc); }
+  .tag.morning { background:#4a3a0b; color:#fbbf24; }
+  .warn { font-size:12px; color:var(--dim); border-left:3px solid var(--line); padding-left:10px; margin-top:10px; }
+  svg { width:100%; height:120px; display:block; }
+  .err { color:var(--down); }
+</style>
+</head>
+<body>
+<div class="top"><h1>Nightly Bot <span class="dim">· paper trading</span></h1><button id="refresh">Refresh</button></div>
+<div id="app"><p class="dim">Loading…</p></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+const signed = (n) => (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
+const cls = (n) => (n >= 0 ? 'up' : 'down');
+const when = (iso) => new Date(iso).toLocaleString(undefined, {weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
+
+function chart(runs) {
+  if (runs.length < 2) return '<p class="dim">The chart appears after the second run.</p>';
+  const v = runs.map((r) => r.equity), min = Math.min(...v), max = Math.max(...v), span = max - min || 1;
+  const pts = v.map((y, i) => `${(i / (v.length - 1)) * 300},${110 - ((y - min) / span) * 100}`).join(' ');
+  const up = v[v.length - 1] >= v[0];
+  return `<svg viewBox="0 0 300 120" preserveAspectRatio="none" role="img" aria-label="Equity over runs">
+    <polyline points="${pts}" fill="none" stroke="${up ? '#34d399' : '#f87171'}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+    <div class="row dim"><span>${money(min)}</span><span>${money(max)}</span></div>`;
+}
+
+function render(r) {
+  const lr = r.last_run, accts = Object.values(r.accounts);
+  const runs = r.runs.slice().reverse().slice(0, 12);
+  const bt = Object.entries(r.backtest);
+  $('#app').innerHTML = `
+    <div class="card">
+      <div class="dim">Paper equity · last run ${esc(when(lr.ts))} <span class="tag ${esc(lr.label)}">${esc(lr.label)}</span></div>
+      <div class="big">${money(r.equity)}</div>
+      <div><span class="${cls(r.return_pct)}">${r.return_pct >= 0 ? '+' : ''}${r.return_pct}%</span> <span class="dim">since ${esc(when(r.started))} · last run <span class="${cls(lr.change)}">${signed(lr.change)}</span></span></div>
+      ${chart(r.runs)}
+      ${lr.errors && lr.errors.length ? `<p class="err">Problem in last run: ${esc(lr.errors.join('; '))}</p>` : ''}
+    </div>
+
+    <h2>Run history</h2>
+    <div class="card">${runs.map((x) => `<div class="row"><span><span class="tag ${esc(x.label)}">${esc(x.label)}</span> <span class="dim">${esc(when(x.ts))}</span></span><span>${x.new_trades} trades · <span class="${cls(x.change)}">${signed(x.change)}</span></span></div>`).join('')}</div>
+
+    <h2>Strategies (live paper)</h2>
+    <div class="card">${accts.map((a) => `<div class="row"><span>${esc(a.name)}<br><span class="dim">${esc(a.symbol)} · ${a.trades} trades${a.win_rate != null ? ' · ' + a.win_rate + '% wins' : ''}${a.open ? ' · open ' + esc(a.open.side) : ''}</span></span><span class="${cls(a.equity - 1000)}">${money(a.equity)}</span></div>`).join('')}</div>
+
+    <h2>Latest trades</h2>
+    <div class="card">${r.trades.length ? r.trades.slice().reverse().slice(0, 15).map((t) => `<div class="row"><span>${esc(t.key.replace('|', ' · '))}<br><span class="dim">${esc(t.side)} · ${esc(t.reason)} · ${esc(when(new Date(t.exit_ts).toISOString()))}</span></span><span class="${cls(t.pnl)}">${signed(t.pnl)}</span></div>`).join('') : '<p class="dim">No finished trades yet. That is normal early on, these strategies trade rarely.</p>'}</div>
+
+    <h2>Backtest on recent history</h2>
+    <div class="card">${bt.map(([k, b]) => `<div class="row"><span>${esc(k.replace('|', ' · '))}<br><span class="dim">${b.trades} trades${b.win_rate != null ? ' · ' + b.win_rate + '% wins' : ''} · ${b.days} days</span></span><span class="${cls(b.return_pct)}">${b.return_pct >= 0 ? '+' : ''}${b.return_pct}%</span></div>`).join('')}
+      <div class="warn">Backtests only show what would have happened in the past. A few weeks of data is too little to trust, so keep paper trading before you risk any real money.</div></div>
+    <p class="dim">Paper money only. Updated ${esc(when(r.updated))}.</p>`;
+}
+
+async function load() {
+  try {
+    const res = await fetch('data/report.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+  } catch (e) {
+    $('#app').innerHTML = '<div class="card"><p>No report yet.</p><p class="dim">The first one appears after the bot runs for the first time (GitHub: Actions tab, run "nightly-bot" manually to start now).</p></div>';
+  }
+}
+$('#refresh').onclick = load;
+load();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
