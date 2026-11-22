@@ -31,6 +31,10 @@
 </head>
 <body>
 <div class="top"><h1>Nightly Bot <span class="dim">· paper trading</span></h1><button id="refresh">Refresh</button></div>
+<h2>Live prices <span class="dim" id="liveStatus"></span></h2>
+<div class="card" id="live"><p class="dim">Loading prices…</p></div>
+<h2>Markets open now</h2>
+<div class="card" id="sessions"></div>
 <div id="app"><p class="dim">Loading…</p></div>
 
 <script>
@@ -79,17 +83,80 @@ function render(r) {
     <p class="dim">Paper money only. Updated ${esc(when(r.updated))}.</p>`;
 }
 
+/* ---------- live prices + market sessions ---------- */
+const WATCH = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+const SESSIONS = [['Sydney', 22, 7], ['Tokyo', 0, 9], ['London', 8, 17], ['New York', 13, 22]]; // UTC hours, standard time
+let REPORT = null, PRICES = {}, LIVE_OK = null, LIVE_AT = null;
+
+const px = (p) => p >= 1000 ? p.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
+const localHour = (h) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+function forexClosedForWeekend(d) {
+  const day = d.getUTCDay(), hr = d.getUTCHours() + d.getUTCMinutes() / 60;
+  return (day === 5 && hr >= 22) || day === 6 || (day === 0 && hr < 22);
+}
+function sessionOpen(s, d) {
+  if (forexClosedForWeekend(d)) return false;
+  const hr = d.getUTCHours() + d.getUTCMinutes() / 60, a = s[1], b = s[2];
+  return a < b ? hr >= a && hr < b : hr >= a || hr < b;
+}
+
+function paintLive() {
+  const rows = WATCH.filter((s) => PRICES[s]).map((s) => {
+    const q = PRICES[s];
+    return `<div class="row"><span>${esc(s.replace('USDT', ''))}<span class="dim"> / USDT</span></span><span>${px(q.p)} <span class="${cls(q.ch)}">${q.ch >= 0 ? '+' : ''}${q.ch.toFixed(2)}%</span></span></div>`;
+  }).join('');
+  let open = '';
+  if (REPORT) {
+    const list = Object.values(REPORT.accounts).filter((a) => a.open && PRICES[a.symbol]);
+    open = `<div class="dim" style="margin-top:10px">Open paper trades</div>` + (list.length ? list.map((a) => {
+      const d = a.open.side === 'long' ? 1 : -1, pct = ((PRICES[a.symbol].p - a.open.entry) / a.open.entry) * 100 * d;
+      return `<div class="row"><span>${esc(a.name)}<br><span class="dim">${esc(a.symbol)} · ${esc(a.open.side)} from ${px(a.open.entry)}</span></span><span class="${cls(pct)}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span></div>`;
+    }).join('') : '<p class="dim">None right now.</p>');
+  }
+  $('#live').innerHTML = (rows || '<p class="dim">No prices yet.</p>') + open;
+  $('#liveStatus').textContent = LIVE_OK === false ? '· cannot reach price feed, retrying' : LIVE_AT ? '· updates every 5s' : '';
+
+  const now = new Date(), weekend = forexClosedForWeekend(now);
+  $('#sessions').innerHTML =
+    `<div class="row"><span>Crypto (Binance)</span><span class="up">Open 24/7</span></div>` +
+    `<div class="row"><span>Deriv synthetics</span><span class="up">Open 24/7</span></div>` +
+    SESSIONS.map((s) => {
+      const o = sessionOpen(s, now);
+      return `<div class="row"><span>${s[0]} forex<br><span class="dim">${localHour(s[1])} - ${localHour(s[2])} your time</span></span><span class="${o ? 'up' : 'down'}">${o ? 'Open' : 'Closed'}</span></div>`;
+    }).join('') +
+    `<div class="warn">${weekend ? 'Forex is closed for the weekend. ' : ''}Session hours are standard times and shift by an hour with daylight saving in Europe and the US.</div>`;
+}
+
+async function pull() {
+  if (document.hidden) return;
+  try {
+    const url = 'https://data-api.binance.vision/api/v3/ticker/24hr?symbols=' + encodeURIComponent(JSON.stringify(WATCH));
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    (await res.json()).forEach((x) => { PRICES[x.symbol] = {p: +x.lastPrice, ch: +x.priceChangePercent}; });
+    LIVE_OK = true; LIVE_AT = new Date();
+  } catch (e) { LIVE_OK = false; }
+  paintLive();
+}
+
 async function load() {
   try {
     const res = await fetch('data/report.json?t=' + Date.now(), {cache: 'no-store'});
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    render(await res.json());
+    REPORT = await res.json();
+    render(REPORT);
+    paintLive();
   } catch (e) {
     $('#app').innerHTML = '<div class="card"><p>No report yet.</p><p class="dim">The first one appears after the bot runs for the first time (GitHub: Actions tab, run "nightly-bot" manually to start now).</p></div>';
   }
 }
-$('#refresh').onclick = load;
+$('#refresh').onclick = () => { load(); pull(); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { load(); pull(); } });
+paintLive();
 load();
+pull();
+setInterval(pull, 5000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
