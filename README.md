@@ -35,3 +35,22 @@ To change run times, edit the two `cron` lines (they are in UTC, Nairobi is UTC+
 - The first run only starts the accounts, so you will see 0 trades. Trades appear over the next runs.
 - If GitHub shows no schedule runs after a long quiet period, open the Actions tab and re-enable the workflow.
 - Test on your own machine with fake data: `python bot/run.py --offline`
+
+## USDJPY demo forward test (jpy_bot.py)
+
+`bot/jpy_bot.py` is your Termux script, moved here so it runs by itself on weekdays.
+It trades a **demo** account only. At 22:00 Nairobi (19:00 UTC) it buys one USDJPY Fall contract
+for 4 hours, and each morning at 06:30 Nairobi it fills in the results.
+Results are saved to `docs/data/jpy_trades.csv` and shown in the app's Bot tab.
+
+Setup (once):
+1. Repo **Settings > Secrets and variables > Actions > New repository secret**.
+   Add `DERIV_APP_ID` (your app ID) and `DERIV_TOKEN` (your token). Never put them in a file in the repo.
+2. **Actions > usdjpy-demo > Run workflow**, choose `test`. It connects and buys nothing.
+3. Stop running `jpy_bot.py trade` in Termux, or you will place two trades a day.
+
+Good to know:
+- GitHub can start scheduled jobs late, so the trade job starts at 21:20 Nairobi and waits until 22:00.
+  A second attempt starts at 21:40. If both are more than 5 minutes late, that day is skipped.
+- Weekend, too-late and already-traded days are normal skips, not errors.
+- If you ever change the token, update the secret.
