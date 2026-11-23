@@ -31,17 +31,41 @@
   .chips button { padding:5px 10px; font-size:13px; border-radius:99px; }
   .chips button.on { background:#0b3a53; border-color:var(--acc); color:var(--acc); }
   .key { font-size:12px; display:flex; gap:12px; margin-top:4px; }
+  .tabs { display:flex; gap:6px; margin-top:14px; position:sticky; top:0; background:var(--bg); padding:6px 0; z-index:2; }
+  .tabs button { flex:1; border-radius:99px; }
+  .tabs button.on { background:#0b3a53; border-color:var(--acc); color:var(--acc); }
+  details { background:var(--card); border-radius:14px; padding:12px 14px; margin-bottom:8px; }
+  summary { cursor:pointer; font-weight:600; }
+  details .body { margin-top:8px; color:var(--txt); }
+  details .body p, details .body ul { margin:6px 0; }
+  details .body ul { padding-left:18px; }
+  details.done summary::after { content:" ✓"; color:var(--up); }
+  details label { display:block; margin-top:10px; font-size:13px; color:var(--dim); }
+  .bar { height:8px; background:var(--line); border-radius:99px; overflow:hidden; margin:6px 0 12px; }
+  .bar i { display:block; height:100%; background:var(--up); }
+  .gauge { font-size:34px; font-weight:700; }
 </style>
 </head>
 <body>
 <div class="top"><h1>Nightly Bot <span class="dim">· paper trading</span></h1><button id="refresh">Refresh</button></div>
+<nav class="tabs"><button data-tab="markets" class="on">Markets</button><button data-tab="bot">Bot</button><button data-tab="learn">Learn</button></nav>
+<section id="tab-markets">
 <h2>Live prices <span class="dim" id="liveStatus"></span></h2>
 <div class="card" id="live"><p class="dim">Loading prices…</p></div>
 <h2>Price chart</h2>
 <div class="card" id="chartBox"><p class="dim">Loading chart…</p></div>
+<h2>Market sentiment</h2>
+<div class="card" id="sentiment"><p class="dim">Loading sentiment…</p></div>
 <h2>Markets open now</h2>
 <div class="card" id="sessions"></div>
+</section>
+<section id="tab-bot" hidden>
+<div id="jpy"></div>
 <div id="app"><p class="dim">Loading…</p></div>
+</section>
+<section id="tab-learn" hidden>
+<div id="learn"></div>
+</section>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -132,6 +156,7 @@ function paintLive() {
       return `<div class="row"><span>${s[0]} forex<br><span class="dim">${localHour(s[1])} - ${localHour(s[2])} your time</span></span><span class="${o ? 'up' : 'down'}">${o ? 'Open' : 'Closed'}</span></div>`;
     }).join('') +
     `<div class="warn">${weekend ? 'Forex is closed for the weekend. ' : ''}Session hours are standard times and shift by an hour with daylight saving in Europe and the US.</div>`;
+  paintSentiment();
 }
 
 async function pull() {
@@ -148,7 +173,7 @@ async function pull() {
 
 /* ---------- price chart with trend and overbought/oversold (own calculation) ---------- */
 let CH_SYM = 'BTCUSDT', CH_TF = '1h', CH_DATA = null, CH_ERR = false;
-const TFS = ['15m', '1h', '4h', '1d'];
+const TFS = ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
 function emaArr(v, n) { const k = 2 / (n + 1); let e = null; return v.map((x, i) => { e = e === null ? x : x * k + e * (1 - k); return i >= n - 1 ? e : null; }); }
 function rsiLast(c, n = 14) {
@@ -207,6 +232,143 @@ $('#chartBox').addEventListener('click', (ev) => {
   CH_DATA = null; paintChart(); pullChart();
 });
 
+/* ---------- market sentiment ---------- */
+let FNG = null, FNG_ERR = false;
+
+async function pullSentiment() {
+  try {
+    const res = await fetch('https://api.alternative.me/fng/?limit=30');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    FNG = j.data.map((x) => ({v: +x.value, label: x.value_classification}));   // newest first
+    FNG_ERR = false;
+  } catch (e) { FNG_ERR = true; }
+  paintSentiment();
+}
+
+function paintSentiment() {
+  const box = $('#sentiment');
+  const qs = WATCH.filter((s) => PRICES[s]).map((s) => PRICES[s]);
+  let breadth = '<p class="dim">Watchlist mood appears once prices load.</p>';
+  if (qs.length) {
+    const ups = qs.filter((q) => q.ch >= 0).length, avg = qs.reduce((a, q) => a + q.ch, 0) / qs.length;
+    breadth = `<div class="row"><span>Watchlist today<br><span class="dim">${ups} of ${qs.length} coins up in 24h</span></span><span class="${cls(avg)}">${avg >= 0 ? '+' : ''}${avg.toFixed(2)}% avg</span></div>`;
+  }
+  let fng = FNG_ERR ? '<p class="err">Cannot reach the Fear &amp; Greed feed, retrying.</p>' : '<p class="dim">Loading Fear &amp; Greed…</p>';
+  if (FNG && FNG.length) {
+    const now = FNG[0], at = (i) => (FNG[i] ? FNG[i].v : null);
+    const col = now.v >= 55 ? 'up' : now.v <= 45 ? 'down' : '';
+    const chron = FNG.slice().reverse().map((x) => x.v);
+    const pts = chron.map((y, i) => `${(i / Math.max(chron.length - 1, 1)) * 300},${100 - y}`).join(' ');
+    const cmp = (label, i) => at(i) === null ? '' : `<div class="row"><span class="dim">${label}</span><span>${at(i)}</span></div>`;
+    fng = `<div class="dim">Crypto Fear &amp; Greed index (0 = extreme fear, 100 = extreme greed)</div>
+      <div class="gauge ${col}">${now.v} <span style="font-size:16px">${esc(now.label)}</span></div>
+      <svg viewBox="0 0 300 100" preserveAspectRatio="none" role="img" aria-label="Fear and Greed, last 30 days" style="height:80px">
+        <line x1="0" y1="50" x2="300" y2="50" stroke="#334155" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+        <polyline points="${pts}" fill="none" stroke="#38bdf8" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+      <div class="dim">Last 30 days</div>
+      ${cmp('Yesterday', 1)}${cmp('A week ago', 7)}${cmp('A month ago', 29)}`;
+  }
+  box.innerHTML = fng + breadth + '<div class="warn">Sentiment shows the crowd mood, not where price goes next. Index data from alternative.me, crypto only.</div>';
+}
+
+/* ---------- learning tab ---------- */
+const LESSONS = [
+  ['paper', 'Paper trading: practice with fake money',
+   `<p>Paper trading runs a strategy on real prices without risking real money. It is how this bot tests ideas.</p>
+    <ul><li>Few trades prove nothing. Luck dominates short runs, so wait for dozens of trades.</li>
+    <li>Real trading adds fees, slippage and nerves that paper trading hides.</li></ul>`],
+  ['candles', 'Candles and timeframes',
+   `<p>A candle shows one period of trading: open, high, low and close. The chart's timeframe sets how long each candle is.</p>
+    <ul><li>1m is one minute per candle, 1h is one hour, 1d is one day.</li>
+    <li>Lower timeframes move more but are noisier and have more false signals. Higher ones are slower and steadier.</li></ul>`],
+  ['trend', 'Trend and moving averages (EMA)',
+   `<p>An EMA is an average of recent prices that weights the newest ones most. The chart shows EMA 20 (faster) and EMA 50 (slower).</p>
+    <ul><li>Price above EMA 20, and EMA 20 above EMA 50, is called an uptrend. The reverse is a downtrend.</li>
+    <li>Moving averages lag. In a sideways market they cross back and forth and give false signals.</li></ul>`],
+  ['rsi', 'RSI: overbought and oversold',
+   `<p>RSI (0 to 100) compares recent gains with recent losses. Above 70 is called overbought, below 30 oversold.</p>
+    <ul><li>It is not a sell or buy signal alone. In a strong trend RSI can stay above 70 for a long time.</li>
+    <li>It works best as a warning that a move is stretched, together with other signs.</li></ul>`],
+  ['bb', 'Bollinger Bands',
+   `<p>Bollinger Bands are an average line (20 periods) with an upper and lower band 2 standard deviations away. Price outside a band means it is stretched.</p>
+    <ul><li>Mean-reversion strategies bet price returns toward the middle line. Your RSI + Bollinger strategy does this.</li>
+    <li>In a strong trend price can walk along a band, and reversal trades lose.</li></ul>`],
+  ['risk', 'Stop loss, take profit and risk per trade',
+   `<p>A stop loss closes a losing trade at a set price. A take profit closes a winner at a set price. The bot risks 1% of the account per trade.</p>
+    <ul><li>Size = money you accept losing / distance to the stop. Risking $10 with a stop 2% away gives a $500 position.</li>
+    <li>Reward to risk matters. Winning 40% of trades at 2:1 reward to risk still comes out positive before fees.</li></ul>`],
+  ['fng', 'Reading Fear & Greed',
+   `<p>The index mixes things like volatility, price momentum, social media activity and Bitcoin dominance into one number from 0 to 100.</p>
+    <ul><li>Extreme fear has sometimes come near bottoms and extreme greed near tops, but it can last for weeks.</li>
+    <li>Use it as context for how crowded the mood is, never as a signal on its own.</li></ul>`],
+  ['results', 'Reading the bot results',
+   `<ul><li><b>Profit factor</b> = total profits divided by total losses. Above 1 is profitable.</li>
+    <li><b>Win rate</b> alone says little. A 35% win rate can be profitable and a 70% one can lose money.</li>
+    <li><b>Backtest vs live paper:</b> backtests look better than live results because strategies get tuned to old data (overfitting).</li>
+    <li><b>Sample size:</b> look at 30 or more trades before drawing a conclusion.</li></ul>`],
+  ['sessions', 'Market sessions',
+   `<p>Forex trades around the clock on weekdays in four overlapping sessions: Sydney, Tokyo, London and New York. The London and New York overlap is usually the busiest.</p>
+    <ul><li>Forex closes for the weekend. Crypto and Deriv synthetics stay open 24/7.</li>
+    <li>Crypto is often quieter on weekends, so signals can behave differently.</li></ul>`],
+];
+
+function learned() { try { return JSON.parse(localStorage.getItem('learned') || '[]'); } catch (e) { return []; } }
+function saveLearned(a) { try { localStorage.setItem('learned', JSON.stringify(a)); } catch (e) {} }
+
+function paintLearn() {
+  const done = learned(), pct = Math.round((done.length / LESSONS.length) * 100);
+  const open = (() => { try { return localStorage.getItem('lessonOpen') || ''; } catch (e) { return ''; } })();
+  $('#learn').innerHTML = `<h2>Learn the basics</h2>
+    <div class="dim">${done.length} of ${LESSONS.length} lessons done</div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    ${LESSONS.map(([id, title, body]) => `<details data-id="${id}" class="${done.includes(id) ? 'done' : ''}" ${open === id ? 'open' : ''}>
+      <summary>${esc(title)}</summary><div class="body">${body}
+      <label><input type="checkbox" data-done="${id}" ${done.includes(id) ? 'checked' : ''}> I understand this</label></div></details>`).join('')}
+    <div class="warn">Education only, not financial advice. Trading can lose money.</div>`;
+}
+
+$('#learn').addEventListener('change', (ev) => {
+  const id = ev.target && ev.target.dataset && ev.target.dataset.done; if (!id) return;
+  let a = learned().filter((x) => x !== id); if (ev.target.checked) a.push(id);
+  saveLearned(a); paintLearn();
+});
+$('#learn').addEventListener('toggle', (ev) => {
+  const d = ev.target; if (!d || !d.dataset || !d.dataset.id || !d.open) return;
+  try { localStorage.setItem('lessonOpen', d.dataset.id); } catch (e) {}
+}, true);
+
+/* ---------- tabs ---------- */
+function showTab(name) {
+  ['markets', 'bot', 'learn'].forEach((t) => { $('#tab-' + t).hidden = t !== name; });
+  document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+  try { localStorage.setItem('tab', name); } catch (e) {}
+}
+$('.tabs').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (b && b.dataset.tab) showTab(b.dataset.tab); });
+
+/* ---------- USDJPY demo forward test (read from docs/data/jpy_trades.csv) ---------- */
+async function loadJpy() {
+  const box = $('#jpy');
+  let rows = [];
+  try {
+    const res = await fetch('data/jpy_trades.csv?t=' + Date.now(), {cache: 'no-store'});
+    if (res.ok) rows = (await res.text()).trim().split(/\r?\n/).slice(1).map((l) => l.split(',')).filter((r) => r.length >= 6);
+  } catch (e) {}
+  const done = rows.filter((r) => ['won', 'lost', 'sold'].includes(r[4]));
+  const wins = done.filter((r) => r[4] === 'won').length;
+  const net = done.reduce((a, r) => a + (parseFloat(r[5]) || 0), 0);
+  const open = rows.filter((r) => r[4] === 'open').length;
+  const list = rows.slice().reverse().slice(0, 15).map((r) => {
+    const p = parseFloat(r[5]);
+    return `<div class="row"><span>${esc(r[0])}<br><span class="dim">${esc(r[4])} · stake ${esc(r[2])}</span></span><span class="${isNaN(p) ? 'dim' : cls(p)}">${isNaN(p) ? 'open' : signed(p)}</span></div>`;
+  }).join('');
+  box.innerHTML = `<h2>USDJPY demo forward test</h2><div class="card">
+    ${rows.length ? `<div class="big ${cls(net)}">${signed(net)}</div>
+      <div class="dim">${done.length} closed · ${wins} won${done.length ? ' (' + Math.round(100 * wins / done.length) + '%)' : ''} · ${open} open</div>${list}`
+      : '<p class="dim">No trades yet. The bot places one demo Fall contract on weekdays at 19:00 UTC (22:00 Nairobi) and fills in results the next morning.</p>'}
+    <div class="warn">Demo account only, no real money. Judge it after at least 30 trades, not before.</div></div>`;
+}
+
 async function load() {
   try {
     const res = await fetch('data/report.json?t=' + Date.now(), {cache: 'no-store'});
@@ -218,15 +380,20 @@ async function load() {
     $('#app').innerHTML = '<div class="card"><p>No report yet.</p><p class="dim">The first one appears after the bot runs for the first time (GitHub: Actions tab, run "nightly-bot" manually to start now).</p></div>';
   }
 }
-$('#refresh').onclick = () => { load(); pull(); };
+$('#refresh').onclick = () => { load(); loadJpy(); pull(); };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { load(); pull(); } });
 paintLive();
 paintChart();
+paintLearn();
+try { const t = localStorage.getItem('tab'); if (t) showTab(t); } catch (e) {}
 load();
+loadJpy();
 pull();
 pullChart();
+pullSentiment();
 setInterval(pull, 5000);
 setInterval(pullChart, 20000);
+setInterval(pullSentiment, 600000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
