@@ -1,1 +1,74 @@
+name: usdjpy-demo
 
+# DEMO account only. The script itself refuses anything that is not a demo connection.
+on:
+  schedule:
+    - cron: "20 18 * * 1-5"   # trade attempt: starts early, the script waits until 19:00 UTC (22:00 Nairobi)
+    - cron: "40 18 * * 1-5"   # backup attempt in case GitHub starts the first one very late
+    - cron: "30 3 * * 2-6"    # settle: fills in the results at 06:30 Nairobi
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "test = check wiring, buys nothing"
+        type: choice
+        default: test
+        options: [test, trade, settle]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: usdjpy-demo
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install websocket-client
+      - name: Pick command
+        id: cmd
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "c=${{ inputs.command }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 3 * * 2-6" ]; then
+            echo "c=settle" >> "$GITHUB_OUTPUT"
+          else
+            echo "c=trade" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Write Deriv credentials (only on this temporary runner)
+        env:
+          DERIV_APP_ID: ${{ secrets.DERIV_APP_ID }}
+          DERIV_TOKEN: ${{ secrets.DERIV_TOKEN }}
+        run: |
+          umask 077
+          printf 'DERIV_APP_ID=%s\nDERIV_TOKEN=%s\n' "$DERIV_APP_ID" "$DERIV_TOKEN" > ~/.deriv_env
+      - name: Run
+        env:
+          TRADES_FILE: docs/data/jpy_trades.csv
+          CMD: ${{ steps.cmd.outputs.c }}
+        run: |
+          set +e
+          python bot/jpy_bot.py "$CMD" 2>&1 | tee run.log
+          rc=${PIPESTATUS[0]}
+          # weekend, too-late and already-traded are normal skips, not failures
+          if [ "$rc" -ne 0 ] && grep -qE "Already traded|Weekend|too late" run.log; then exit 0; fi
+          exit $rc
+      - name: Save results back to the repo
+        if: always()
+        run: |
+          git config user.name "nightly-bot"
+          git config user.email "nightly-bot@users.noreply.github.com"
+          git add docs/data
+          if git diff --staged --quiet; then
+            echo "nothing to save"
+          else
+            git commit -m "usdjpy demo $(date -u +'%Y-%m-%d %H:%M') UTC"
+            git pull --rebase
+            git push
+          fi
