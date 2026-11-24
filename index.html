@@ -133,10 +133,10 @@ function sessionOpen(s, d) {
   return a < b ? hr >= a && hr < b : hr >= a || hr < b;
 }
 
-function paintLive() {
+function paintTicks() {
   const rowsFor = (list) => list.filter((s) => PRICES[s]).map((s) => {
-    const q = PRICES[s];
-    return `<div class="row"><span>${esc(s.replace('USDT', ''))}<span class="dim"> / USDT</span></span><span>${px(q.p)} <span class="${cls(q.ch)}">${q.ch >= 0 ? '+' : ''}${q.ch.toFixed(2)}%</span></span></div>`;
+    const q = PRICES[s], hot = q.tick && Date.now() - q.tick < 700 && q.dir;
+    return `<div class="row"><span>${esc(s.replace('USDT', ''))}<span class="dim"> / USDT</span></span><span><span class="${hot ? (q.dir > 0 ? 'up' : 'down') : ''}">${px(q.p)}</span> <span class="${cls(q.ch)}">${q.ch >= 0 ? '+' : ''}${q.ch.toFixed(2)}%</span></span></div>`;
   }).join('');
   const majorRows = rowsFor(MAJORS), memeRows = rowsFor(MEMES);
   const rows = majorRows + (memeRows ? '<div class="dim" style="margin-top:10px">Meme coins (very volatile)</div>' + memeRows : '');
@@ -149,8 +149,10 @@ function paintLive() {
     }).join('') : '<p class="dim">None right now.</p>');
   }
   $('#live').innerHTML = (rows || '<p class="dim">No prices yet.</p>') + open;
-  $('#liveStatus').textContent = LIVE_OK === false ? '· cannot reach price feed, retrying' : LIVE_AT ? '· updates every 5s' : '';
+  $('#liveStatus').textContent = WS_OK ? '· live, every trade' : LIVE_OK === false ? '· cannot reach price feed, retrying' : LIVE_AT ? '· updates every 5s' : '';
+}
 
+function paintSessions() {
   const now = new Date(), weekend = forexClosedForWeekend(now);
   $('#sessions').innerHTML =
     `<div class="row"><span>Crypto (Binance)</span><span class="up">Open 24/7</span></div>` +
@@ -160,8 +162,9 @@ function paintLive() {
       return `<div class="row"><span>${s[0]} forex<br><span class="dim">${localHour(s[1])} - ${localHour(s[2])} your time</span></span><span class="${o ? 'up' : 'down'}">${o ? 'Open' : 'Closed'}</span></div>`;
     }).join('') +
     `<div class="warn">${weekend ? 'Forex is closed for the weekend. ' : ''}Session hours are standard times and shift by an hour with daylight saving in Europe and the US.</div>`;
-  paintSentiment();
 }
+
+function paintLive() { paintTicks(); paintSessions(); paintSentiment(); }
 
 async function pull() {
   if (document.hidden) return;
@@ -169,11 +172,49 @@ async function pull() {
     const url = 'https://data-api.binance.vision/api/v3/ticker/24hr?symbols=' + encodeURIComponent(JSON.stringify(WATCH));
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    (await res.json()).forEach((x) => { PRICES[x.symbol] = {p: +x.lastPrice, ch: +x.priceChangePercent}; });
+    (await res.json()).forEach((x) => {
+      const old = PRICES[x.symbol] || {};
+      PRICES[x.symbol] = Object.assign(old, {p: WS_OK && old.tick ? old.p : +x.lastPrice, ch: +x.priceChangePercent});
+    });
     LIVE_OK = true; LIVE_AT = new Date();
   } catch (e) { LIVE_OK = false; }
   paintLive();
 }
+
+/* ---------- live ticks: every trade streamed from Binance over a WebSocket ---------- */
+let WS = null, WS_OK = false, WS_TRY = 0, WS_DIRTY = false, WS_CH_DIRTY = false, WS_LAST = 0;
+const WS_HOSTS = ['wss://data-stream.binance.vision', 'wss://stream.binance.com:9443'];
+
+function connectWS() {
+  try {
+    const host = WS_HOSTS[WS_TRY % WS_HOSTS.length];
+    const sock = new WebSocket(host + '/stream?streams=' + WATCH.map((s) => s.toLowerCase() + '@trade').join('/'));
+    WS = sock;
+    sock.onopen = () => { WS_OK = true; WS_TRY = 0; };
+    sock.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      const d = m && m.data; if (!d || d.e !== 'trade') return;
+      const p = +d.p, q = PRICES[d.s] || (PRICES[d.s] = {p: p, ch: 0});
+      q.dir = p > q.p ? 1 : p < q.p ? -1 : (q.dir || 0);
+      q.p = p; q.tick = Date.now(); WS_LAST = q.tick; WS_DIRTY = true;
+      if (d.s === CH_SYM && CH_DATA && CH_DATA.length) { CH_DATA[CH_DATA.length - 1] = p; WS_CH_DIRTY = true; }
+    };
+    sock.onerror = () => { try { sock.close(); } catch (e) {} };
+    sock.onclose = () => {
+      if (WS !== sock) return;
+      WS_OK = false;
+      WS_TRY++;
+      setTimeout(connectWS, Math.min(30000, 1000 * Math.pow(2, Math.min(WS_TRY, 5))));
+    };
+  } catch (e) { WS_OK = false; }
+}
+
+setInterval(() => {
+  if (document.hidden) return;
+  if (WS_DIRTY || Date.now() - WS_LAST < 1000) { WS_DIRTY = false; paintTicks(); }
+}, 250);
+setInterval(() => { if (!document.hidden && WS_CH_DIRTY) { WS_CH_DIRTY = false; paintChart(); } }, 1000);
+setInterval(() => { if (!document.hidden && WS_OK) paintSentiment(); }, 2000);
 
 /* ---------- price chart with trend and overbought/oversold (own calculation) ---------- */
 let CH_SYM = 'BTCUSDT', CH_TF = '1h', CH_DATA = null, CH_ERR = false;
@@ -404,6 +445,7 @@ loadJpy();
 pull();
 pullChart();
 pullSentiment();
+connectWS();
 setInterval(pull, 5000);
 setInterval(pullChart, 20000);
 setInterval(pullSentiment, 600000);
