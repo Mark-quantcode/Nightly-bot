@@ -1,0 +1,37 @@
+name: nightly-bot
+
+on:
+  schedule:
+    - cron: "0 19 * * *"   # 22:00 Nairobi (night run)
+    - cron: "0 3 * * *"    # 06:00 Nairobi (morning run)
+  workflow_dispatch:        # lets you press "Run workflow" to test right now
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the bot
+        run: python bot/run.py
+      - name: Save results back to the repo
+        run: |
+          git config user.name "nightly-bot"
+          git config user.email "nightly-bot@users.noreply.github.com"
+          git add docs/data
+          if git diff --staged --quiet; then
+            echo "nothing to save"
+          else
+            git commit -m "bot run $(date -u +'%Y-%m-%d %H:%M') UTC"
+            git pull --rebase
+            git push
+          fi
