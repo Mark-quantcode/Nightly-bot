@@ -114,11 +114,13 @@ function render(r) {
 }
 
 /* ---------- live prices + market sessions ---------- */
-const WATCH = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+const MAJORS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'];
+const MEMES = ['DOGEUSDT', 'SHIBUSDT', 'PEPEUSDT', 'BONKUSDT', 'WIFUSDT', 'FLOKIUSDT'];
+const WATCH = MAJORS.concat(MEMES);
 const SESSIONS = [['Sydney', 22, 7], ['Tokyo', 0, 9], ['London', 8, 17], ['New York', 13, 22]]; // UTC hours, standard time
 let REPORT = null, PRICES = {}, LIVE_OK = null, LIVE_AT = null;
 
-const px = (p) => p >= 1000 ? p.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
+const px = (p) => p >= 1000 ? p.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : p >= 1 ? p.toFixed(3) : p >= 0.01 ? p.toFixed(5) : p.toFixed(8);
 const localHour = (h) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
 
 function forexClosedForWeekend(d) {
@@ -132,10 +134,12 @@ function sessionOpen(s, d) {
 }
 
 function paintLive() {
-  const rows = WATCH.filter((s) => PRICES[s]).map((s) => {
+  const rowsFor = (list) => list.filter((s) => PRICES[s]).map((s) => {
     const q = PRICES[s];
     return `<div class="row"><span>${esc(s.replace('USDT', ''))}<span class="dim"> / USDT</span></span><span>${px(q.p)} <span class="${cls(q.ch)}">${q.ch >= 0 ? '+' : ''}${q.ch.toFixed(2)}%</span></span></div>`;
   }).join('');
+  const majorRows = rowsFor(MAJORS), memeRows = rowsFor(MEMES);
+  const rows = majorRows + (memeRows ? '<div class="dim" style="margin-top:10px">Meme coins (very volatile)</div>' + memeRows : '');
   let open = '';
   if (REPORT) {
     const list = Object.values(REPORT.accounts).filter((a) => a.open && PRICES[a.symbol]);
@@ -240,7 +244,7 @@ async function pullSentiment() {
     const res = await fetch('https://api.alternative.me/fng/?limit=30');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const j = await res.json();
-    FNG = j.data.map((x) => ({v: +x.value, label: x.value_classification}));   // newest first
+    FNG = j.data.map((x) => ({v: +x.value, label: x.value_classification, ts: +x.timestamp}));   // newest first
     FNG_ERR = false;
   } catch (e) { FNG_ERR = true; }
   paintSentiment();
@@ -249,10 +253,18 @@ async function pullSentiment() {
 function paintSentiment() {
   const box = $('#sentiment');
   const qs = WATCH.filter((s) => PRICES[s]).map((s) => PRICES[s]);
-  let breadth = '<p class="dim">Watchlist mood appears once prices load.</p>';
+  const mq = MEMES.filter((s) => PRICES[s]).map((s) => PRICES[s]);
+  const avgOf = (a) => a.reduce((s, q) => s + q.ch, 0) / a.length;
+  let breadth = '<p class="dim">Live mood appears once prices load.</p>';
   if (qs.length) {
-    const ups = qs.filter((q) => q.ch >= 0).length, avg = qs.reduce((a, q) => a + q.ch, 0) / qs.length;
-    breadth = `<div class="row"><span>Watchlist today<br><span class="dim">${ups} of ${qs.length} coins up in 24h</span></span><span class="${cls(avg)}">${avg >= 0 ? '+' : ''}${avg.toFixed(2)}% avg</span></div>`;
+    const ups = qs.filter((q) => q.ch >= 0).length, avg = avgOf(qs);
+    const score = Math.round(0.5 * (100 * ups / qs.length) + 0.5 * Math.max(0, Math.min(100, 50 + avg * 5)));
+    const mood = score >= 75 ? 'Very bullish' : score >= 60 ? 'Bullish' : score > 40 ? 'Neutral' : score > 25 ? 'Bearish' : 'Very bearish';
+    const mcol = score >= 60 ? 'up' : score <= 40 ? 'down' : '';
+    breadth = `<div class="dim">Live mood right now, from the last 24h moves of ${qs.length} coins (updates every 5s)</div>
+      <div class="gauge ${mcol}">${score} <span style="font-size:16px">${mood}</span></div>
+      <div class="row"><span>All coins<br><span class="dim">${ups} of ${qs.length} up in 24h</span></span><span class="${cls(avg)}">${avg >= 0 ? '+' : ''}${avg.toFixed(2)}% avg</span></div>` +
+      (mq.length ? `<div class="row"><span>Meme coins<br><span class="dim">${mq.filter((q) => q.ch >= 0).length} of ${mq.length} up in 24h</span></span><span class="${cls(avgOf(mq))}">${avgOf(mq) >= 0 ? '+' : ''}${avgOf(mq).toFixed(2)}% avg</span></div>` : '');
   }
   let fng = FNG_ERR ? '<p class="err">Cannot reach the Fear &amp; Greed feed, retrying.</p>' : '<p class="dim">Loading Fear &amp; Greed…</p>';
   if (FNG && FNG.length) {
@@ -261,7 +273,8 @@ function paintSentiment() {
     const chron = FNG.slice().reverse().map((x) => x.v);
     const pts = chron.map((y, i) => `${(i / Math.max(chron.length - 1, 1)) * 300},${100 - y}`).join(' ');
     const cmp = (label, i) => at(i) === null ? '' : `<div class="row"><span class="dim">${label}</span><span>${at(i)}</span></div>`;
-    fng = `<div class="dim">Crypto Fear &amp; Greed index (0 = extreme fear, 100 = extreme greed)</div>
+    const dateTxt = now.ts ? new Date(now.ts * 1000).toLocaleDateString(undefined, {weekday:'short', day:'numeric', month:'short'}) : 'today';
+    fng = `<div class="dim">Crypto Fear &amp; Greed index, reading for ${esc(dateTxt)} (0 = extreme fear, 100 = extreme greed). It updates once a day.</div>
       <div class="gauge ${col}">${now.v} <span style="font-size:16px">${esc(now.label)}</span></div>
       <svg viewBox="0 0 300 100" preserveAspectRatio="none" role="img" aria-label="Fear and Greed, last 30 days" style="height:80px">
         <line x1="0" y1="50" x2="300" y2="50" stroke="#334155" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
@@ -269,7 +282,7 @@ function paintSentiment() {
       <div class="dim">Last 30 days</div>
       ${cmp('Yesterday', 1)}${cmp('A week ago', 7)}${cmp('A month ago', 29)}`;
   }
-  box.innerHTML = fng + breadth + '<div class="warn">Sentiment shows the crowd mood, not where price goes next. Index data from alternative.me, crypto only.</div>';
+  box.innerHTML = breadth + '<div style="height:12px"></div>' + fng + '<div class="warn">Sentiment shows the crowd mood, not where price goes next. The live mood is my own simple calculation from Binance 24h moves. The Fear &amp; Greed index comes from alternative.me, crypto only.</div>';
 }
 
 /* ---------- learning tab ---------- */
