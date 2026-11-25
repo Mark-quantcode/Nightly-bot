@@ -1,10 +1,12 @@
+
 name: usdjpy-demo
 
 # DEMO account only. The script itself refuses anything that is not a demo connection.
 on:
   schedule:
-    - cron: "20 18 * * 1-5"   # trade attempt: starts early, the script waits until 19:00 UTC (22:00 Nairobi)
-    - cron: "40 18 * * 1-5"   # backup attempt in case GitHub starts the first one very late
+    - cron: "45 17 * * 1-5"   # trade attempt 1: starts early, the script waits until 19:00 UTC (22:00 Nairobi)
+    - cron: "15 18 * * 1-5"   # trade attempt 2, in case GitHub skips or delays the first
+    - cron: "40 18 * * 1-5"   # trade attempt 3 (extra safety). Only one trade a day is ever placed.
     - cron: "30 3 * * 2-6"    # settle: fills in the results at 06:30 Nairobi
   workflow_dispatch:
     inputs:
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
