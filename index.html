@@ -555,13 +555,22 @@ function showTab(name) {
 }
 $('.tabs').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (b && b.dataset.tab) showTab(b.dataset.tab); });
 
+/* ---------- bot data: read straight from GitHub so it is fresh even if the website is not rebuilt ---------- */
+async function getData(name) {
+  const urls = [], m = location.hostname.match(/^([^.]+)\.github\.io$/), repo = location.pathname.split('/')[1];
+  if (m && repo) urls.push(`https://raw.githubusercontent.com/${m[1]}/${repo}/main/docs/data/${name}?t=${Date.now()}`);
+  urls.push('data/' + name + '?t=' + Date.now());
+  for (const u of urls) { try { const r = await fetch(u, {cache: 'no-store'}); if (r.ok) return r; } catch (e) {} }
+  return null;
+}
+
 /* ---------- USDJPY demo forward test (read from docs/data/jpy_trades.csv) ---------- */
 async function loadJpy() {
   const box = $('#jpy');
   let rows = [];
   try {
-    const res = await fetch('data/jpy_trades.csv?t=' + Date.now(), {cache: 'no-store'});
-    if (res.ok) rows = (await res.text()).trim().split(/\r?\n/).slice(1).map((l) => l.split(',')).filter((r) => r.length >= 6);
+    const res = await getData('jpy_trades.csv');
+    if (res) rows = (await res.text()).trim().split(/\r?\n/).slice(1).map((l) => l.split(',')).filter((r) => r.length >= 6);
   } catch (e) {}
   const done = rows.filter((r) => ['won', 'lost', 'sold'].includes(r[4]));
   const wins = done.filter((r) => r[4] === 'won').length;
@@ -580,8 +589,8 @@ async function loadJpy() {
 
 async function load() {
   try {
-    const res = await fetch('data/report.json?t=' + Date.now(), {cache: 'no-store'});
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const res = await getData('report.json');
+    if (!res) throw new Error('no report');
     REPORT = await res.json();
     render(REPORT);
     paintLive();
